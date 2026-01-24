@@ -637,6 +637,11 @@ app.get('/api/expenses/summary', authMiddleware, (req, res) => {
 
 app.get('/api/tasks', authMiddleware, (req, res) => {
   try {
+    const { status } = req.query;
+    const allowedStatuses = new Set(['pending', 'in_progress', 'completed', 'cancelled']);
+    const filterByStatus = status && allowedStatuses.has(status);
+    const whereClause = filterByStatus ? 'WHERE t.status = ?' : '';
+    const params = filterByStatus ? [status] : [];
     const tasks = db.prepare(`
       SELECT 
         t.*,
@@ -653,9 +658,78 @@ app.get('/api/tasks', authMiddleware, (req, res) => {
       LEFT JOIN contractors ct ON t.contractor_id = ct.id
       LEFT JOIN users cr ON t.created_by = cr.id
       LEFT JOIN areas ar ON t.area_id = ar.id
+      ${whereClause}
       ORDER BY t.due_date DESC, t.priority DESC
-    `).all();
+    `).all(...params);
     res.json({ tasks });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/tasks/:id', authMiddleware, (req, res) => {
+  try {
+    const task = db.prepare(`
+      SELECT 
+        t.*,
+        c.name as category_name,
+        a.unit_number as apartment_label,
+        u.name as assigned_name,
+        ct.name as contractor_name,
+        cr.name as created_by_name,
+        ar.name as area_name
+      FROM tasks t
+      LEFT JOIN categories c ON t.category_id = c.id
+      LEFT JOIN apartments a ON t.apartment_id = a.id
+      LEFT JOIN users u ON t.assigned_to = u.id
+      LEFT JOIN contractors ct ON t.contractor_id = ct.id
+      LEFT JOIN users cr ON t.created_by = cr.id
+      LEFT JOIN areas ar ON t.area_id = ar.id
+      WHERE t.id = ?
+    `).get(req.params.id);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    res.json({ task: { ...task, category: task.category_name } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/tasks/:id/remarks', authMiddleware, (req, res) => {
+  try {
+    const task = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    const remarks = db.prepare(`
+      SELECT r.*, u.name as author_name
+      FROM task_remarks r
+      LEFT JOIN users u ON r.author_id = u.id
+      WHERE r.task_id = ?
+      ORDER BY r.created_at DESC
+    `).all(req.params.id);
+    res.json({ remarks });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/tasks/:id/remarks', authMiddleware, (req, res) => {
+  const message = (req.body.message || '').trim();
+  if (!message) {
+    return res.status(400).json({ error: 'Message required' });
+  }
+  try {
+    const task = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    const stmt = db.prepare(
+      'INSERT INTO task_remarks (task_id, author_id, message) VALUES (?, ?, ?)'
+    );
+    const result = stmt.run(req.params.id, req.user.id, message);
+    res.json({ message: 'Remark added', remarkId: result.lastInsertRowid });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -693,6 +767,51 @@ app.post('/api/tasks', authMiddleware, (req, res) => {
   }
 });
 
+app.patch('/api/tasks/:id', authMiddleware, (req, res) => {
+  try {
+    const updates = [];
+    const values = [];
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'status')) {
+      updates.push('status = ?');
+      values.push(req.body.status);
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'hours_spent')) {
+      updates.push('hours_spent = ?');
+      values.push(req.body.hours_spent ?? 0);
+    }
+    const hasActualCost = Object.prototype.hasOwnProperty.call(req.body, 'actual_cost')
+      || Object.prototype.hasOwnProperty.call(req.body, 'cost_amount');
+    if (hasActualCost) {
+      const actual = req.body.actual_cost ?? req.body.cost_amount ?? 0;
+      updates.push('actual_cost = ?');
+      values.push(actual);
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'remarks')) {
+      updates.push('remarks = ?');
+      values.push(req.body.remarks);
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'completed_date')) {
+      updates.push('completed_date = ?');
+      values.push(req.body.completed_date);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No updates provided' });
+    }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    const stmt = db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`);
+    const result = stmt.run(...values, req.params.id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    res.json({ message: 'Task updated' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.put('/api/tasks/:id', authMiddleware, (req, res) => {
   const {
     title, description, category_id, apartment_id, area_id, assigned_to,
@@ -710,11 +829,14 @@ app.put('/api/tasks/:id', authMiddleware, (req, res) => {
         actual_cost = ?, hours_spent = ?, remarks = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
-    stmt.run(
+    const result = stmt.run(
       title, description, category_id, apartment_id, area_id, assigned_to,
       contractor_id, status, priority, due_date, completed_date,
       estimated_cost, actual, hours_spent || 0, remarks, req.params.id
     );
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
     res.json({ message: 'Task updated' });
   } catch (error) {
     res.status(500).json({ error: error.message });
