@@ -8,8 +8,11 @@ nixPkgs = [
   "pkg-config"
 ]
 
+[variables]
+NPM_CONFIG_BUILD_FROM_SOURCE = "true"
+
 [phases.install]
-cmds = ["npm ci --build-from-source"]
+cmds = ["npm ci"]
 
 [phases.build]
 
