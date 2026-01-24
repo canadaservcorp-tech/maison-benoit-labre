@@ -61,6 +61,62 @@ try {
   console.warn('Migration warning:', error.message);
 }
 
+// Automatic database backups (for persistent storage)
+const backupDir = process.env.DB_BACKUP_DIR || path.join(dbDir, 'backups');
+const backupCron = process.env.DB_BACKUP_CRON || '0 3 * * *'; // Default: 3 AM daily (UTC on Railway)
+const backupRetentionDays = Number(process.env.DB_BACKUP_RETENTION_DAYS || 14);
+const backupsEnabled = process.env.DISABLE_DB_BACKUP !== 'true';
+
+const ensureBackupDir = () => {
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
+  }
+};
+
+const pruneBackups = () => {
+  if (!Number.isFinite(backupRetentionDays) || backupRetentionDays <= 0) {
+    return;
+  }
+  const cutoff = Date.now() - backupRetentionDays * 24 * 60 * 60 * 1000;
+  try {
+    const files = fs.readdirSync(backupDir);
+    files.forEach((file) => {
+      if (!file.startsWith('maintenance-backup-') || !file.endsWith('.db')) {
+        return;
+      }
+      const filePath = path.join(backupDir, file);
+      const stats = fs.statSync(filePath);
+      if (stats.mtimeMs < cutoff) {
+        fs.unlinkSync(filePath);
+      }
+    });
+  } catch (error) {
+    console.warn('Backup cleanup warning:', error.message);
+  }
+};
+
+const runDbBackup = () => {
+  if (!backupsEnabled) {
+    return;
+  }
+  try {
+    ensureBackupDir();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(backupDir, `maintenance-backup-${timestamp}.db`);
+    const safePath = backupPath.replace(/'/g, "''");
+    db.exec(`VACUUM INTO '${safePath}'`);
+    pruneBackups();
+    console.log(`Database backup created: ${backupPath}`);
+  } catch (error) {
+    console.error('Database backup failed:', error);
+  }
+};
+
+if (backupsEnabled) {
+  cron.schedule(backupCron, runDbBackup);
+  console.log(`Database backup scheduled: ${backupCron}`);
+}
+
 // Rename Lobby -> Drop-in if present
 try {
   db.prepare("UPDATE areas SET name = 'Drop-in' WHERE name = 'Lobby'").run();

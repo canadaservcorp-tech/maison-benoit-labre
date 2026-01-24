@@ -112,6 +112,29 @@ REMINDER_CRON=0 8 * * *
 
 ---
 
+## Automatic Database Backups (Recommended)
+
+To keep data safe across deployments, enable daily backups to a persistent volume.
+
+1. Mount persistent storage (Railway volume) and set:
+```env
+DB_PATH=/app/data/maintenance.db
+```
+
+2. Configure backup settings:
+```env
+DB_BACKUP_DIR=/app/data/backups
+DB_BACKUP_CRON=0 3 * * *          # 3 AM daily (UTC on Railway)
+DB_BACKUP_RETENTION_DAYS=14
+```
+
+Optional:
+```env
+DISABLE_DB_BACKUP=true
+```
+
+---
+
 ## Production Deployment
 
 ### Backend (Railway, Heroku, etc.)
