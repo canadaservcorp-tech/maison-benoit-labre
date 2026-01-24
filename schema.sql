@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS tasks (
   FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
+-- Task remarks
+CREATE TABLE IF NOT EXISTS task_remarks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  author_id INTEGER,
+  message TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (task_id) REFERENCES tasks(id),
+  FOREIGN KEY (author_id) REFERENCES users(id)
+);
+
 -- Preventive maintenance schedules
 CREATE TABLE IF NOT EXISTS preventive_schedules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
