@@ -302,35 +302,6 @@ app.get('/api/apartments', authMiddleware, (req, res) => {
   }
 });
 
-// Create apartment (admin only)
-app.post('/api/apartments', authMiddleware, adminOnly, (req, res) => {
-  const { floor, number, label, description } = req.body;
-  const parsedFloor = Number.isFinite(Number(floor)) ? Number(floor) : null;
-  const parsedNumber = Number.isFinite(Number(number)) ? Number(number) : null;
-  let unitNumber = (label || '').trim();
-
-  if (!unitNumber) {
-    if (parsedFloor === null || parsedNumber === null) {
-      return res.status(400).json({ error: 'Label or floor/number required' });
-    }
-    unitNumber = `${parsedFloor}${String(parsedNumber).padStart(2, '0')}`;
-  }
-
-  try {
-    const stmt = db.prepare(`
-      INSERT INTO apartments (unit_number, floor, area_type, description)
-      VALUES (?, ?, 'apartment', ?)
-    `);
-    const result = stmt.run(unitNumber, parsedFloor, description || `Apartment ${unitNumber}`);
-    res.json({ message: 'Apartment created', apartmentId: result.lastInsertRowid });
-  } catch (error) {
-    if (error.message.includes('UNIQUE')) {
-      return res.status(400).json({ error: 'Apartment already exists' });
-    }
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Reset apartments to standard list (admin only)
 app.post('/api/apartments/reset', authMiddleware, adminOnly, (req, res) => {
   try {
@@ -666,15 +637,7 @@ app.get('/api/expenses/summary', authMiddleware, (req, res) => {
 
 app.get('/api/tasks', authMiddleware, (req, res) => {
   try {
-    const filters = [];
-    const params = [];
-    if (req.query.status) {
-      filters.push('t.status = ?');
-      params.push(req.query.status);
-    }
-
-    const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-    const query = `
+    const tasks = db.prepare(`
       SELECT 
         t.*,
         c.name as category_name,
@@ -690,42 +653,9 @@ app.get('/api/tasks', authMiddleware, (req, res) => {
       LEFT JOIN contractors ct ON t.contractor_id = ct.id
       LEFT JOIN users cr ON t.created_by = cr.id
       LEFT JOIN areas ar ON t.area_id = ar.id
-      ${whereClause}
       ORDER BY t.due_date DESC, t.priority DESC
-    `;
-    const tasks = db.prepare(query).all(...params);
+    `).all();
     res.json({ tasks });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Task details
-app.get('/api/tasks/:id', authMiddleware, (req, res) => {
-  try {
-    const task = db.prepare(`
-      SELECT 
-        t.*,
-        c.name as category_name,
-        c.name as category,
-        a.unit_number as apartment_label,
-        u.name as assigned_name,
-        ct.name as contractor_name,
-        cr.name as created_by_name,
-        ar.name as area_name
-      FROM tasks t
-      LEFT JOIN categories c ON t.category_id = c.id
-      LEFT JOIN apartments a ON t.apartment_id = a.id
-      LEFT JOIN users u ON t.assigned_to = u.id
-      LEFT JOIN contractors ct ON t.contractor_id = ct.id
-      LEFT JOIN users cr ON t.created_by = cr.id
-      LEFT JOIN areas ar ON t.area_id = ar.id
-      WHERE t.id = ?
-    `).get(req.params.id);
-    if (!task) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-    res.json({ task });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -786,93 +716,6 @@ app.put('/api/tasks/:id', authMiddleware, (req, res) => {
       estimated_cost, actual, hours_spent || 0, remarks, req.params.id
     );
     res.json({ message: 'Task updated' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Patch task fields (status, time, cost)
-app.patch('/api/tasks/:id', authMiddleware, (req, res) => {
-  const { status, hours_spent, actual_cost, cost_amount, remarks } = req.body;
-  const updates = [];
-  const values = [];
-
-  if (status !== undefined) {
-    updates.push('status = ?');
-    values.push(status);
-    if (status === 'completed') {
-      updates.push('completed_date = COALESCE(completed_date, DATE("now"))');
-    }
-  }
-  if (hours_spent !== undefined) {
-    updates.push('hours_spent = ?');
-    values.push(hours_spent ?? 0);
-  }
-  if (actual_cost !== undefined || cost_amount !== undefined) {
-    const actual = actual_cost ?? cost_amount ?? 0;
-    updates.push('actual_cost = ?');
-    values.push(actual);
-  }
-  if (remarks !== undefined) {
-    updates.push('remarks = ?');
-    values.push(remarks);
-  }
-
-  if (!updates.length) {
-    return res.status(400).json({ error: 'No fields to update' });
-  }
-
-  updates.push('updated_at = CURRENT_TIMESTAMP');
-  try {
-    const stmt = db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`);
-    const result = stmt.run(...values, req.params.id);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-    res.json({ message: 'Task updated' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Task remarks
-app.get('/api/tasks/:id/remarks', authMiddleware, (req, res) => {
-  try {
-    const remarks = db.prepare(`
-      SELECT 
-        l.id,
-        l.details as message,
-        l.created_at,
-        u.name as author_name
-      FROM task_logs l
-      LEFT JOIN users u ON l.user_id = u.id
-      WHERE l.task_id = ? AND l.action = 'remark'
-      ORDER BY l.created_at DESC
-    `).all(req.params.id);
-    res.json({ remarks });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/tasks/:id/remarks', authMiddleware, (req, res) => {
-  const message = (req.body?.message || '').trim();
-  if (!message) {
-    return res.status(400).json({ error: 'Message required' });
-  }
-
-  try {
-    const task = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
-    if (!task) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-
-    const stmt = db.prepare(`
-      INSERT INTO task_logs (task_id, user_id, action, details)
-      VALUES (?, ?, 'remark', ?)
-    `);
-    const result = stmt.run(req.params.id, req.user.id, message);
-    res.json({ message: 'Remark added', remarkId: result.lastInsertRowid });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
