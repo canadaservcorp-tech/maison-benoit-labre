@@ -78,7 +78,10 @@ const TaskDetailPage = () => {
         <div className="grid md:grid-cols-3 gap-4 text-sm">
           <div><span className="text-gray-500">{t('assignedTo')}: </span>{task.assigned_name}</div>
           <div><span className="text-gray-500">{t('dueDate')}: </span>{task.due_date || '-'}</div>
-          <div><span className="text-gray-500">{t('category')}: </span>{task.category}</div>
+          <div>
+            <span className="text-gray-500">{t('category')}: </span>
+            {task.category_name || task.category || '-'}
+          </div>
           <div><span className="text-gray-500">{t('apartments')}: </span>{task.apartment_label || '-'}</div>
           <div><span className="text-gray-500">{t('areas')}: </span>{task.area_name || '-'}</div>
         </div>
